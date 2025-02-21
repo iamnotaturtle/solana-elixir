@@ -86,9 +86,21 @@ defmodule Solana.RPC.Request do
   For more information, see [the Solana
   docs](https://docs.solana.com/developing/clients/jsonrpc-api#getrecentblockhash).
   """
+  @deprecated "Use get_latest_blockhash/1 instead"
   @spec get_recent_blockhash(opts :: keyword) :: t
   def get_recent_blockhash(opts \\ []) do
     {"getRecentBlockhash", [encode_opts(opts)]}
+  end
+
+  @doc """
+  Returns the latest block hash from the ledger.
+
+  For more information, see [the Solana
+  docs](https://solana.com/docs/rpc/http/getlatestblockhash).
+  """
+  @spec get_latest_blockhash(opts :: keyword) :: t
+  def get_latest_blockhash(opts \\ []) do
+    {"getLatestBlockhash", [encode_opts(opts)]}
   end
 
   @doc """
