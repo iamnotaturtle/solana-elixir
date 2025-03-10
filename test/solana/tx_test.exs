@@ -4,7 +4,7 @@ defmodule Solana.TransactionTest do
   import ExUnit.CaptureLog
   import Solana, only: [pubkey!: 1]
 
-  alias Solana.{Transaction, Instruction, Account}
+  alias Solana.{Key, Transaction, Instruction, Account, SystemProgram}
 
   describe "to_binary/1" do
     test "fails if there's no blockhash" do
@@ -89,7 +89,7 @@ defmodule Solana.TransactionTest do
       signer = Solana.keypair()
       read_only = Solana.keypair()
       program = Solana.keypair() |> pubkey!()
-      blockhash = Solana.keypair() |> pubkey!()
+      blockhash = Solana.keypair() |> pubkey!() |> B58.encode58()
 
       ix = %Instruction{
         program: program,
@@ -121,7 +121,7 @@ defmodule Solana.TransactionTest do
       payer = Solana.keypair()
       read_only = Solana.keypair()
       program = Solana.keypair() |> pubkey!()
-      blockhash = Solana.keypair() |> pubkey!()
+      blockhash = Solana.keypair() |> pubkey!() |> B58.encode58()
 
       ix = %Instruction{
         program: program,
@@ -151,7 +151,7 @@ defmodule Solana.TransactionTest do
       signer = Solana.keypair()
       read_only = Solana.keypair()
       program = Solana.keypair() |> pubkey!()
-      blockhash = Solana.keypair() |> pubkey!()
+      blockhash = Solana.keypair() |> pubkey!() |> B58.encode58()
 
       ix = %Instruction{
         program: program,
@@ -182,7 +182,7 @@ defmodule Solana.TransactionTest do
       from = Solana.keypair()
       to = Solana.keypair()
       program = Solana.keypair() |> pubkey!()
-      blockhash = Solana.keypair() |> pubkey!()
+      blockhash = Solana.keypair() |> pubkey!() |> B58.encode58()
 
       ix = %Instruction{
         program: program,
@@ -217,7 +217,7 @@ defmodule Solana.TransactionTest do
       signer = Solana.keypair()
       read_only = Solana.keypair()
       program = Solana.keypair() |> pubkey!()
-      blockhash = Solana.keypair() |> pubkey!()
+      blockhash = Solana.keypair() |> pubkey!() |> B58.encode58()
 
       ix = %Instruction{
         program: program,
@@ -239,11 +239,11 @@ defmodule Solana.TransactionTest do
       assert :error = Transaction.parse(clipped_tx)
     end
 
-    test "can parse a properly encoded tranaction" do
+    test "can parse a properly encoded transaction" do
       from = Solana.keypair()
       to = Solana.keypair()
       program = Solana.keypair() |> pubkey!()
-      blockhash = Solana.keypair() |> pubkey!()
+      blockhash = Solana.keypair() |> pubkey!() |> B58.encode58()
 
       ix = %Instruction{
         program: program,
@@ -269,6 +269,34 @@ defmodule Solana.TransactionTest do
       assert actual.payer == pubkey!(from)
       assert actual.instructions == [ix, ix]
       assert actual.blockhash == blockhash
+    end
+
+    test "can encode a valid tx" do
+      expected =
+        "AQxg4tGFnKR7nCdN6/MulGC4dHu2IbVJHWPfhrkWUudYYsRNA17P8VX7Zw3KYbXn3YitzKX85MTBmFhUlnNEsQSAAQABAkJ0F3D3/lS5+bgOUoOQwYIYPkY0QlqH55L0nahhjKaMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAANTfwDM7PRYv4wLwWjeR+wGzJR6kOscDdAkJBJCfjxvwEBAgAADAIAAAAAypo7AAAAAAA="
+
+      {:ok, keypair} = Key.pair_from_file("/Users/ygaberman/.config/solana/id.json")
+      fromPubkey = pubkey!(keypair)
+
+      tx = %Transaction{
+        payer: fromPubkey,
+        instructions: [
+          SystemProgram.transfer(
+            lamports: 1_000_000_000,
+            from: fromPubkey,
+            to: fromPubkey
+          )
+        ],
+        blockhash: pubkey!("twGeuuuL3buTNR6CphWpvi6wDoLbTbh3CbMBo6Kx2Az") |> B58.encode58(),
+        signers: [keypair],
+        address_table_lookups: [],
+        version: 0
+      }
+
+      {:ok, tx_bin} = Transaction.to_binary(tx)
+
+      base64Encoded = Base.encode64(tx_bin)
+      assert expected == base64Encoded
     end
   end
 

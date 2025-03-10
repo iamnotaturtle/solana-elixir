@@ -1,19 +1,27 @@
 defmodule Solana.Transaction do
   @moduledoc """
   Functions for building and encoding Solana
-  [transactions](https://docs.solana.com/developing/programming-model/transactions)
+  [transactions](https://solana.com/docs/core/transactions)
   """
   require Logger
-  alias Solana.{Account, CompactArray, Instruction}
+
+  alias Solana.{
+    Account,
+    AddressTableLookup,
+    CompactArray,
+    Instruction
+  }
 
   @typedoc """
   All the details needed to encode a transaction.
   """
   @type t :: %__MODULE__{
+          version: integer(),
           payer: Solana.key() | nil,
           blockhash: binary | nil,
           instructions: [Instruction.t()],
-          signers: [Solana.keypair()]
+          signers: [Solana.keypair()],
+          address_table_lookups: [AddressTableLookup.t()]
         }
 
   @typedoc """
@@ -30,7 +38,9 @@ defmodule Solana.Transaction do
     :payer,
     :blockhash,
     instructions: [],
-    signers: []
+    signers: [],
+    address_table_lookups: [],
+    version: 0
   ]
 
   @doc """
@@ -76,7 +86,7 @@ defmodule Solana.Transaction do
 
   @doc """
   Encodes a `t:Solana.Transaction.t/0` into a [binary
-  format](https://docs.solana.com/developing/programming-model/transactions#anatomy-of-a-transaction)
+  format](https://solana.com/docs/core/transactions)
 
   Returns `{:ok, encoded_transaction}` if the transaction was successfully
   encoded, or an error tuple if the encoding failed -- plus more error details
@@ -87,11 +97,18 @@ defmodule Solana.Transaction do
   def to_binary(%__MODULE__{blockhash: nil}), do: {:error, :no_blockhash}
   def to_binary(%__MODULE__{instructions: []}), do: {:error, :no_instructions}
 
-  def to_binary(tx = %__MODULE__{instructions: ixs, signers: signers}) do
+  def to_binary(
+        tx = %__MODULE__{
+          version: version,
+          instructions: ixs,
+          signers: signers,
+          address_table_lookups: address_table_lookups
+        }
+      ) do
     with {:ok, ixs} <- check_instructions(List.flatten(ixs)),
          accounts = compile_accounts(ixs, tx.payer),
          true <- signers_match?(accounts, signers) do
-      message = encode_message(accounts, tx.blockhash, ixs)
+      message = encode_message(version, accounts, tx.blockhash, ixs, address_table_lookups)
 
       signatures =
         signers
@@ -124,7 +141,7 @@ defmodule Solana.Transaction do
     end)
   end
 
-  # https://docs.solana.com/developing/programming-model/transactions#account-addresses-format
+  # https://solana.com/docs/core/transactions#array-of-account-addresses
   defp compile_accounts(ixs, payer) do
     ixs
     |> Enum.map(fn ix -> [%Account{key: ix.program} | ix.accounts] end)
@@ -147,18 +164,33 @@ defmodule Solana.Transaction do
     |> MapSet.equal?(expected)
   end
 
-  # https://docs.solana.com/developing/programming-model/transactions#message-format
-  defp encode_message(accounts, blockhash, ixs) do
+  # https://solana.com/docs/core/transactions#transaction
+  defp encode_message(version, accounts, blockhash, ixs, address_table_lookups) do
     [
+      encode_version(version),
       create_header(accounts),
       CompactArray.to_iolist(Enum.map(accounts, & &1.key)),
-      blockhash,
-      CompactArray.to_iolist(encode_instructions(ixs, accounts))
+      B58.decode58!(blockhash),
+      CompactArray.to_iolist(encode_instructions(ixs, accounts)),
+      encode_address_table_lookups(address_table_lookups)
     ]
     |> :erlang.list_to_binary()
   end
 
-  # https://docs.solana.com/developing/programming-model/transactions#message-header-format
+  # TODO: properly encode this
+  defp encode_address_table_lookups(address_table_lookups) do
+    CompactArray.to_iolist(address_table_lookups)
+  end
+
+  @version_bit_mask 0b10000000
+
+  # https://docs.anza.xyz/proposals/versioned-transactions
+  defp encode_version(version) do
+    # Set MSB to 1 to indicate a versioned transaction and remaining bits to the version number
+    version + @version_bit_mask
+  end
+
+  # https://solana.com/docs/core/transactions#message-header
   defp create_header(accounts) do
     accounts
     |> Enum.reduce(
@@ -174,7 +206,7 @@ defmodule Solana.Transaction do
 
   defp unary(result?), do: if(result?, do: 1, else: 0)
 
-  # https://docs.solana.com/developing/programming-model/transactions#instruction-format
+  # https://solana.com/docs/core/transactions#array-of-instructions
   defp encode_instructions(ixs, accounts) do
     idxs = index_accounts(accounts)
 
@@ -200,7 +232,7 @@ defmodule Solana.Transaction do
 
   @doc """
   Parses a `t:Solana.Transaction.t/0` from data encoded in Solana's [binary
-  format](https://docs.solana.com/developing/programming-model/transactions#anatomy-of-a-transaction)
+  format](https://solana.com/docs/core/transactions)
 
   Returns `{transaction, extras}` if the transaction was successfully
   parsed, or `:error` if the provided binary could not be parsed. `extras`
@@ -208,26 +240,28 @@ defmodule Solana.Transaction do
   namely:
 
   - `:header` - the [transaction message
-  header](https://docs.solana.com/developing/programming-model/transactions#message-header-format)
+  header](https://solana.com/docs/core/transactions#message-header)
   - `:accounts` - an [ordered array of
-  accounts](https://docs.solana.com/developing/programming-model/transactions#account-addresses-format)
+  accounts](https://solana.com/docs/core/transactions#array-of-account-addresses)
   - `:signatures` - a [list of signed copies of the transaction
-  message](https://docs.solana.com/developing/programming-model/transactions#signatures)
+  message](https://solana.com/docs/core/transactions#transaction)
   """
   @spec parse(encoded :: binary) :: {t(), keyword} | :error
   def parse(encoded) do
+    # TODO: get the address table lookups as well
+    # address_table_lookups = extract_address_table_lookups(ix_data)
     with {signatures, message, _} <- CompactArray.decode_and_split(encoded, 64),
-         <<header::binary-size(3), contents::binary>> <- message,
+         <<version::binary-size(1), header::binary-size(3), contents::binary>> <- message,
          {account_keys, hash_and_ixs, key_count} <- CompactArray.decode_and_split(contents, 32),
          <<blockhash::binary-size(32), ix_data::binary>> <- hash_and_ixs,
-         {:ok, instructions} <- extract_instructions(ix_data) do
+         {:ok, instructions, rest} <- extract_instructions(ix_data) do
       tx_accounts = derive_accounts(account_keys, key_count, header)
       indices = Enum.into(Enum.with_index(tx_accounts, &{&2, &1}), %{})
 
       {
         %__MODULE__{
           payer: tx_accounts |> List.first() |> Map.get(:key),
-          blockhash: blockhash,
+          blockhash: blockhash |> B58.encode58(),
           instructions:
             Enum.map(instructions, fn {program, accounts, data} ->
               %Instruction{
@@ -250,8 +284,8 @@ defmodule Solana.Transaction do
 
   defp extract_instructions(data) do
     with {ix_data, ix_count} <- CompactArray.decode_and_split(data),
-         {reversed_ixs, ""} <- extract_instructions(ix_data, ix_count) do
-      {:ok, Enum.reverse(reversed_ixs)}
+         {reversed_ixs, rest} <- extract_instructions(ix_data, ix_count) do
+      {:ok, Enum.reverse(reversed_ixs), rest}
     else
       error -> error
     end
@@ -260,8 +294,11 @@ defmodule Solana.Transaction do
   defp extract_instructions(data, count) do
     Enum.reduce_while(1..count, {[], data}, fn _, {acc, raw} ->
       case extract_instruction(raw) do
-        {ix, rest} -> {:cont, {[ix | acc], rest}}
-        _ -> {:halt, :error}
+        {ix, rest} ->
+          {:cont, {[ix | acc], rest}}
+
+        _ ->
+          {:halt, :error}
       end
     end)
   end
@@ -272,7 +309,8 @@ defmodule Solana.Transaction do
          {data, rest, _} <- extract_instruction_data(rest) do
       {{program, Enum.map(accounts, &:binary.decode_unsigned/1), data}, rest}
     else
-      _ -> :error
+      _ ->
+        :error
     end
   end
 
