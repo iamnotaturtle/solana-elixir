@@ -1,7 +1,7 @@
 defmodule Solana.SystemProgram do
   @moduledoc """
   Functions for interacting with Solana's [System
-  Program](https://docs.solana.com/developing/runtime-facilities/programs#system-program)
+  Program](https://docs.anza.xyz/runtime/programs#system-program)
   """
 
   alias Solana.{Instruction, Account}
